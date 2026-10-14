@@ -4,11 +4,18 @@ Complément du [README](../README.md) : fonctionnement interne, tests et choix d
 
 ## MariaDB dans Docker
 
-`docker-compose.yml` ne lance que la base ; l'API tourne sur la machine (`make run`).
+`docker-compose.yml` lance trois services ; l'API Rust tourne sur la machine (`make run`).
+
+| Service | Rôle |
+| --- | --- |
+| `mariadb` | La base, port hôte 3308 |
+| `init` | Lance `import` puis crée les comptes de démo, et s'arrête. Image construite par `docker/init/Dockerfile` (commandes Rust compilées dans Docker), script `docker/init/init.sh`, fichier SQL monté depuis `data/`. Relancé à chaque `up` : l'import est idempotent (environ 3 s). |
+| `python-api` | API Python (FastAPI + pandas), port hôte 8001, démarrée une fois `init` terminé avec succès |
 
 | Commande | Effet |
 | --- | --- |
-| `make db` | Démarre le conteneur `entreprises-mariadb` et attend qu'il soit prêt (« healthy ») |
+| `make db` | Démarre les trois services et attend qu'ils soient prêts |
+| `docker compose logs init` | Résultat du dernier import |
 | `make db-shell` | Console SQL dans la base `entreprises` (`SHOW TABLES;`, `SELECT COUNT(*) FROM entreprises;`) |
 | `make db-stop` | Arrête le conteneur ; les données restent dans le volume `mariadb-data` |
 | `docker compose down -v` | Arrête et **efface** les données (volume supprimé) |

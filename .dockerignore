@@ -1,0 +1,10 @@
+# Contexte de build du service `init` : seuls Cargo.*, build.rs, migrations/, src/ et docker/init/ servent.
+target/
+.git/
+data/
+python-api/
+tests/
+*.db
+*.db-shm
+*.db-wal
+.env

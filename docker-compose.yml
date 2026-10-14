@@ -1,6 +1,8 @@
-# Base MariaDB de l'API. L'API elle-même tourne hors conteneur (`make run`).
+# Base MariaDB, remplie automatiquement par le service `init`, et API Python (`python-api`).
+# L'API Rust tourne hors conteneur (`make run`).
 #
-#   docker compose up -d      démarre MariaDB (données gardées dans le volume `mariadb-data`)
+#   docker compose up -d      démarre MariaDB (données gardées dans le volume `mariadb-data`),
+#                             la remplit (import + comptes de démo), puis lance l'API Python
 #   docker compose ps         état ; « healthy » = prête à recevoir des connexions
 #   docker compose down       arrête (les données restent)
 #   docker compose down -v    arrête et supprime les données
@@ -28,6 +30,41 @@ services:
       interval: 2s
       timeout: 5s
       retries: 30
+
+  # Remplit la base puis s'arrête : import des 99 999 entreprises et comptes de démonstration.
+  # Relancé à chaque `up`, sans risque (modifications PATCH et suppressions conservées).
+  # Le premier build compile les commandes Rust : quelques minutes.
+  init:
+    build:
+      context: .
+      dockerfile: docker/init/Dockerfile
+    container_name: entreprises-init
+    environment:
+      DATABASE_URL: mysql://entreprises:entreprises-demo@mariadb:3306/entreprises
+    volumes:
+      - ./data:/app/data:ro
+    depends_on:
+      mariadb:
+        condition: service_healthy
+
+  # API Python (FastAPI + pandas) : lit la même base MariaDB que l'API Rust.
+  # Swagger : http://127.0.0.1:8001/docs
+  python-api:
+    build: ./python-api
+    container_name: entreprises-python-api
+    restart: unless-stopped
+    environment:
+      # Dans le réseau Docker, MariaDB s'appelle `mariadb` et écoute sur 3306 (pas 3308).
+      DATABASE_URL: mysql+pymysql://entreprises:entreprises-demo@mariadb:3306/entreprises
+    ports:
+      - "127.0.0.1:8001:8000"
+    volumes:
+      # Le code est monté : une modification relance l'API sans rebuild.
+      - ./python-api/app:/srv/app
+    command: ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000", "--reload"]
+    depends_on:
+      init:
+        condition: service_completed_successfully
 
 volumes:
   mariadb-data:

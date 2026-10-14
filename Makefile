@@ -7,7 +7,7 @@ help: ## Liste les commandes
 .env:
 	cp .env.example .env
 
-db: ## Démarre MariaDB (Docker) et attend qu'elle soit prête
+db: ## Démarre MariaDB (Docker), la remplit (import + comptes de démo) et lance l'API Python
 	docker compose up -d --wait
 
 db-stop: ## Arrête MariaDB (les données restent dans le volume ; tout effacer : docker compose down -v)

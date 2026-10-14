@@ -11,21 +11,12 @@ API REST en Rust qui donne accès aux 99 999 entreprises de la base Sirene de l'
 
 Toutes les commandes se tapent **dans le dossier `entreprises-api`**, avec Docker Desktop ouvert.
 
-**La première fois :**
-
 ```bash
-make db                  # démarre la base MariaDB dans Docker
-make import              # charge les 99 999 entreprises
-make utilisateurs-demo   # crée les comptes de démonstration
-make run                 # lance l'API
+make db    # Docker : démarre MariaDB, charge les 99 999 entreprises, crée les comptes de démo, lance l'API Python
+make run   # lance l'API Rust
 ```
 
-**Les fois suivantes :**
-
-```bash
-make db
-make run
-```
+La toute première fois, `make db` compile les outils d'import dans Docker : compter quelques minutes. Ensuite, quelques secondes. Le chargement est refait à chaque `make db` sans rien écraser : les modifications et suppressions faites via l'API sont conservées.
 
 L'API est prête quand le terminal affiche `API prête sur http://127.0.0.1:3000`. Laisser ce terminal ouvert ; **Ctrl+C** arrête l'API, `make db-stop` arrête la base.
 
