@@ -1,0 +1,307 @@
+# API Entreprises — requêtes de démonstration
+#
+# Avec l'extension VS Code « REST Client » (humao.rest-client) : cliquer sur « Send Request »
+# au-dessus de chaque requête. Le serveur doit tourner : `make run` (ou `cargo run`).
+#
+# Authentification par JWT : comptes de démonstration créés par `make utilisateurs-demo`
+#   admin@demo.fr / admin-demo-mdp (admin)   lecteur@demo.fr / lecteur-demo-mdp (lecteur)
+# Envoyer d'abord les deux requêtes « Connexion » ci-dessous : les suivantes réutilisent leurs tokens.
+# Un token expire au bout de 15 min : renvoyer alors la connexion.
+# Les requêtes PATCH et DELETE modifient entreprises.db. Après elles, 036320596 devient « L'EPI D'OR », 10.71D et cessée :
+# 10.71C compte 22 entreprises au lieu de 23 (13 actives au lieu de 14), « boulangerie » 18 au lieu de 19 (6 actives au lieu de 7),
+# et rejouer la suppression de 005410345 renvoie 404. `make reset` remet les données d'origine, même serveur lancé.
+
+@baseUrl = http://127.0.0.1:3000/api/v1
+@admin = {{connexionAdmin.response.body.$.access_token}}
+@lecteur = {{connexionLecteur.response.body.$.access_token}}
+
+
+############################################################################
+# Connexion — à envoyer en premier
+############################################################################
+
+### Connexion · 200 — admin : JWT valable 15 min
+# @name connexionAdmin
+POST {{baseUrl}}/tokens
+Content-Type: application/json
+
+{ "email": "admin@demo.fr", "mot_de_passe": "admin-demo-mdp" }
+
+### Connexion · 200 — lecteur
+# @name connexionLecteur
+POST {{baseUrl}}/tokens
+Content-Type: application/json
+
+{ "email": "lecteur@demo.fr", "mot_de_passe": "lecteur-demo-mdp" }
+
+### Connexion · 401 — mauvais mot de passe (même réponse qu'un email inconnu)
+POST {{baseUrl}}/tokens
+Content-Type: application/json
+
+{ "email": "admin@demo.fr", "mot_de_passe": "mauvais-mot-de-passe" }
+
+
+############################################################################
+# E1 — Retrouver une société par son identifiant
+############################################################################
+
+### E1 · 200 — BOULANGERIE PATISSERIE L'EPI D'OR
+GET {{baseUrl}}/entreprises/036320596
+Authorization: Bearer {{lecteur}}
+
+### E1 · 200 — zéros de tête omis : 325175 = 000325175 (entrepreneur individuel)
+GET {{baseUrl}}/entreprises/325175
+Authorization: Bearer {{lecteur}}
+
+### E1 · 200 — réponse allégée avec fields
+GET {{baseUrl}}/entreprises/036320596?fields=siren,denomination
+Authorization: Bearer {{lecteur}}
+
+### E1 · 400 — SIREN non numérique
+GET {{baseUrl}}/entreprises/12ab
+Authorization: Bearer {{lecteur}}
+
+### E1 · 400 — SIREN de plus de 9 chiffres
+GET {{baseUrl}}/entreprises/1234567890
+Authorization: Bearer {{lecteur}}
+
+### E1 · 404 — SIREN inconnu
+GET {{baseUrl}}/entreprises/999999999
+Authorization: Bearer {{lecteur}}
+
+
+############################################################################
+# E2 — Chercher par code activité
+############################################################################
+
+### E2 · 200 — 10.71C : 23 entreprises
+GET {{baseUrl}}/entreprises?activite_principale=10.71C
+Authorization: Bearer {{lecteur}}
+
+### E2 · 200 — 10.71C actives : 14 entreprises
+GET {{baseUrl}}/entreprises?activite_principale=10.71C&etat_administratif=active
+Authorization: Bearer {{lecteur}}
+
+### E2 · 200 — ancien code 70.3C trouvable tel quel
+GET {{baseUrl}}/entreprises?activite_principale=70.3C&limit=5
+Authorization: Bearer {{lecteur}}
+
+### E2 · 200 — ancien code 22.02
+GET {{baseUrl}}/entreprises?activite_principale=22.02&limit=5
+Authorization: Bearer {{lecteur}}
+
+### E2 · 200 — virgule = OU : 10.71C ou 15.8C
+GET {{baseUrl}}/entreprises?activite_principale=10.71C,15.8C
+Authorization: Bearer {{lecteur}}
+
+
+############################################################################
+# E3 — Chercher par dénomination
+############################################################################
+
+### E3 · 200 — « boulangerie » : 19 entreprises
+GET {{baseUrl}}/entreprises?denomination=boulangerie
+Authorization: Bearer {{lecteur}}
+
+### E3 · 200 — « boulangerie » actives : 7 entreprises
+GET {{baseUrl}}/entreprises?denomination=boulangerie&etat_administratif=active
+Authorization: Bearer {{lecteur}}
+
+### E3 · 200 — casse et accents ignorés : même résultat que « boulangerie »
+GET {{baseUrl}}/entreprises?denomination=Boulangérie
+Authorization: Bearer {{lecteur}}
+
+### E3 · 200 — cherche aussi dans nom et prénom : entrepreneur 000325175
+GET {{baseUrl}}/entreprises?denomination=janoyer
+Authorization: Bearer {{lecteur}}
+
+### E3 · 400 — moins de 3 caractères
+GET {{baseUrl}}/entreprises?denomination=bo
+Authorization: Bearer {{lecteur}}
+
+### E3 · 400 — aucun filtre
+GET {{baseUrl}}/entreprises
+Authorization: Bearer {{lecteur}}
+
+
+############################################################################
+# Pagination, tri et réponse allégée
+############################################################################
+
+### 200 — page 2 de 70.3C, 10 par page, les plus récentes d'abord, 3 champs
+GET {{baseUrl}}/entreprises?activite_principale=70.3C&sort=-date_creation&offset=10&limit=10&fields=siren,denomination,date_creation
+Authorization: Bearer {{lecteur}}
+
+### 200 — dernière page : pas de links.next
+GET {{baseUrl}}/entreprises?activite_principale=10.71C&offset=20&limit=20
+Authorization: Bearer {{lecteur}}
+
+### 400 — limit au-delà de 100
+GET {{baseUrl}}/entreprises?denomination=boulangerie&limit=101
+Authorization: Bearer {{lecteur}}
+
+### 400 — offset + limit au-delà de 10 000
+GET {{baseUrl}}/entreprises?activite_principale=70.3C&offset=9990&limit=20
+Authorization: Bearer {{lecteur}}
+
+### 400 — tri hors liste blanche
+GET {{baseUrl}}/entreprises?denomination=boulangerie&sort=nom
+Authorization: Bearer {{lecteur}}
+
+
+############################################################################
+# E5 — Modifier une entreprise (admin)
+############################################################################
+
+### E5 · 200 — déménagement
+PATCH {{baseUrl}}/entreprises/036320596
+Authorization: Bearer {{admin}}
+Content-Type: application/json
+
+{
+  "adresse": {
+    "numero_voie": "12",
+    "type_voie": "RUE",
+    "libelle_voie": "DE LA GARE",
+    "code_postal": "79190",
+    "commune": "SAUZE-VAUSSAIS"
+  }
+}
+
+### E5 · 200 — changement de nom : seul ce champ change
+PATCH {{baseUrl}}/entreprises/036320596
+Authorization: Bearer {{admin}}
+Content-Type: application/json
+
+{ "denomination": "L'EPI D'OR" }
+
+### E5 · 200 — changement d'activité (exemple de l'Excel) : 10.71C → 10.71D
+PATCH {{baseUrl}}/entreprises/036320596
+Authorization: Bearer {{admin}}
+Content-Type: application/json
+
+{ "activite_principale": "10.71D" }
+
+### E5 · 200 — erreur de saisie : null vide le prénom, nom et autres champs absents inchangés
+PATCH {{baseUrl}}/entreprises/325175
+Authorization: Bearer {{admin}}
+Content-Type: application/json
+
+{ "prenom": null }
+
+### E5 · 200 — cessation d'activité
+PATCH {{baseUrl}}/entreprises/036320596
+Authorization: Bearer {{admin}}
+Content-Type: application/json
+
+{ "etat_administratif": "cessee" }
+
+### E5 · 422 — siren non modifiable, code NAF (ancien format) et code postal hors format, prénom de plus de 20 caractères
+PATCH {{baseUrl}}/entreprises/036320596
+Authorization: Bearer {{admin}}
+Content-Type: application/json
+
+{
+  "siren": "036320597",
+  "activite_principale": "70.3C",
+  "adresse": { "code_postal": "7919" },
+  "prenom": "UN PRENOM BEAUCOUP TROP LONG"
+}
+
+### E5 · 415 — Content-Type absent
+PATCH {{baseUrl}}/entreprises/036320596
+Authorization: Bearer {{admin}}
+
+{ "denomination": "L'EPI D'OR" }
+
+### E5 · 403 — token lecteur
+PATCH {{baseUrl}}/entreprises/036320596
+Authorization: Bearer {{lecteur}}
+Content-Type: application/json
+
+{ "denomination": "L'EPI D'OR" }
+
+
+############################################################################
+# E4 — Supprimer une entreprise (droit à l'oubli, admin)
+############################################################################
+
+### E4 · 403 — token lecteur
+DELETE {{baseUrl}}/entreprises/005410345
+Authorization: Bearer {{lecteur}}
+
+### E4 · 204 — suppression (définitive : un réimport ne la recrée pas)
+DELETE {{baseUrl}}/entreprises/005410345
+Authorization: Bearer {{admin}}
+
+### E4 · 404 — l'entreprise supprimée n'existe plus
+GET {{baseUrl}}/entreprises/005410345
+Authorization: Bearer {{lecteur}}
+
+### E4 · 404 — SIREN inconnu
+DELETE {{baseUrl}}/entreprises/999999999
+Authorization: Bearer {{admin}}
+
+
+############################################################################
+# Droits et méthodes
+############################################################################
+
+### 401 — sans token (header WWW-Authenticate: Bearer)
+GET {{baseUrl}}/entreprises/036320596
+
+### 401 — token inconnu
+GET {{baseUrl}}/entreprises/036320596
+Authorization: Bearer mauvais-token
+
+### 405 — POST non proposé (header Allow: GET,HEAD)
+POST {{baseUrl}}/entreprises
+Authorization: Bearer {{admin}}
+Content-Type: application/json
+
+{ "denomination": "NOUVELLE ENTREPRISE" }
+
+### 405 — PUT non proposé (header Allow: GET,HEAD,PATCH,DELETE)
+PUT {{baseUrl}}/entreprises/036320596
+Authorization: Bearer {{admin}}
+Content-Type: application/json
+
+{ "denomination": "L'EPI D'OR" }
+
+
+############################################################################
+# Comptes utilisateurs (admin)
+############################################################################
+
+### Comptes · 201 — créer un compte lecteur (Location : /api/v1/utilisateurs/{id})
+# @name nouveauCompte
+POST {{baseUrl}}/utilisateurs
+Authorization: Bearer {{admin}}
+Content-Type: application/json
+
+{ "email": "crm@demo.fr", "mot_de_passe": "mot-de-passe-du-crm", "role": "lecteur" }
+
+### Comptes · 200 — lire le compte créé
+GET {{baseUrl}}/utilisateurs/{{nouveauCompte.response.body.$.id}}
+Authorization: Bearer {{admin}}
+
+### Comptes · 409 — email déjà utilisé
+POST {{baseUrl}}/utilisateurs
+Authorization: Bearer {{admin}}
+Content-Type: application/json
+
+{ "email": "lecteur@demo.fr", "mot_de_passe": "un-autre-mot-de-passe", "role": "admin" }
+
+### Comptes · 422 — email, mot de passe et rôle refusés d'un coup
+POST {{baseUrl}}/utilisateurs
+Authorization: Bearer {{admin}}
+Content-Type: application/json
+
+{ "email": "pas-un-email", "mot_de_passe": "court", "role": "superadmin" }
+
+### Comptes · 403 — un lecteur ne crée pas de compte
+POST {{baseUrl}}/utilisateurs
+Authorization: Bearer {{lecteur}}
+Content-Type: application/json
+
+{ "email": "x@demo.fr", "mot_de_passe": "mot-de-passe-solide", "role": "admin" }
