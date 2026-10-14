@@ -4,13 +4,13 @@ Complément du [README](../README.md) : fonctionnement interne, tests et choix d
 
 ## MariaDB dans Docker
 
-`docker-compose.yml` lance trois services ; l'API Rust tourne sur la machine (`make run`).
+`compose.yml`, à la racine du dépôt, lance trois services ; l'API Rust tourne sur la machine (`make run`). Le Makefile l'appelle avec `docker compose -f ../compose.yml` ; à la main, taper les commandes `docker compose` depuis la racine du dépôt.
 
 | Service | Rôle |
 | --- | --- |
 | `mariadb` | La base, port hôte 3308 |
-| `init` | Lance `import` puis crée les comptes de démo, et s'arrête. Image construite par `docker/init/Dockerfile` (commandes Rust compilées dans Docker), script `docker/init/init.sh`, fichier SQL monté depuis `data/`. Relancé à chaque `up` : l'import est idempotent (environ 3 s). |
-| `python-api` | API Python (FastAPI + pandas), port hôte 8001, démarrée une fois `init` terminé avec succès |
+| `init` | Lance `import` puis crée les comptes de démo, et s'arrête. Image construite par `docker/init/Dockerfile` (contexte : ce dossier) (commandes Rust compilées dans Docker), script `docker/init/init.sh`, fichier SQL monté depuis `data/`. Relancé à chaque `up` : l'import est idempotent (environ 3 s). |
+| `python-api` | API Python (FastAPI + pandas), port hôte 8001, démarrée une fois `init` terminé avec succès. `POST /api/v1/tokens` comme l'API Rust (mêmes comptes, Argon2id) ; routes `/api/v1/stats/*` réservées aux rôles lecteur et admin. Même `JWT_SECRET` et même `JWT_DUREE_MINUTES`, lus dans `.env`, mêmes règles (`../python-api/app/auth.py`) : un token émis par une API est valable sur l'autre. `/api/v1/health` reste publique. |
 
 | Commande | Effet |
 | --- | --- |
@@ -107,7 +107,7 @@ Limites connues :
 On peut aussi charger `mytable` avec le client `mariadb` du conteneur, puis lancer la recopie :
 
 ```bash
-docker compose exec -T mariadb mariadb -uentreprises -pentreprises-demo entreprises < data/StockUniteLegale_100000_utf8.sql
+docker compose -f ../compose.yml exec -T mariadb mariadb -uentreprises -pentreprises-demo entreprises < data/StockUniteLegale_100000_utf8.sql
 cargo run --bin import        # sans argument : recopie la mytable déjà chargée
 ```
 
@@ -157,7 +157,7 @@ requests.http
 | --- | --- | --- | --- |
 | SIREN dans l'URI | `Path<u32>` + contrôle ≤ 999 999 999 | `Path<String>` + « chiffres uniquement, 9 au plus » | `u32` accepte `+123` et `0000000001` (10 chiffres), que le critère E1 demande de refuser (400) |
 | DELETE sur un SIREN mal formé | Erreurs 401, 403, 404 | 400, comme E1 et E5 | Un SIREN illisible n'est pas « inconnu » ; ajouté dans l'onglet « Échanges de données » de l'Excel |
-| Base de données | SQLite (`entreprises.db`) | MariaDB 11.8 dans Docker (`docker-compose.yml`) | Découverte de Docker |
+| Base de données | SQLite (`entreprises.db`) | MariaDB 11.8 dans Docker (`compose.yml`) | Découverte de Docker |
 | Documentation OpenAPI | `utoipa` 6 + `utoipa-scalar` 0.4 (`utoipa-swagger-ui` incompatible avec `utoipa` 6) | `utoipa` 6 + `utoipa-swagger-ui` 10 | `utoipa-swagger-ui` 10.0.1 (23 septembre 2026) dépend désormais de `utoipa` 6 ; Swagger UI demandé explicitement |
 | Effacement physique (RGPD) | Plus aucune trace du nom sur disque après un DELETE | Ligne supprimée de la table ; octets écrasés plus tard par InnoDB | InnoDB n'a pas d'équivalent à `secure_delete` + checkpoint du WAL |
 

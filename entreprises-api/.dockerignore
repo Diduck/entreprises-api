@@ -2,7 +2,6 @@
 target/
 .git/
 data/
-python-api/
 tests/
 *.db
 *.db-shm

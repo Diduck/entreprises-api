@@ -3,3 +3,5 @@ uvicorn[standard]==0.34.0
 pandas==2.2.3
 SQLAlchemy==2.0.36
 PyMySQL==1.1.1
+PyJWT==2.10.1
+argon2-cffi==23.1.0

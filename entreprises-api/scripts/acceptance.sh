@@ -3,7 +3,7 @@
 #
 #   ./scripts/acceptance.sh        (ou : make acceptance ; autre port : PORT=4000 ./scripts/acceptance.sh)
 #
-# Prérequis : MariaDB lancée (`docker compose up -d`).
+# Prérequis : MariaDB lancée (`make db`).
 #
 # Le script importe le fichier SQL dans une base temporaire (`entreprises_acceptance`, dans le conteneur),
 # lance l'API dessus (port 3999 par défaut), crée deux comptes, se connecte (JWT), vérifie chaque critère E1 à E5,
@@ -33,7 +33,7 @@ for outil in cargo curl jq openssl docker; do
 done
 
 # sql <requête> : exécutée en root dans le conteneur MariaDB, résultat brut (sans en-tête)
-sql() { docker compose exec -T mariadb mariadb -uroot -proot-demo -N -B -e "$1"; }
+sql() { docker compose -f ../compose.yml exec -T mariadb mariadb -uroot -proot-demo -N -B -e "$1"; }
 
 vert() { printf '\033[32m%s\033[0m' "$1"; }
 rouge() { printf '\033[31m%s\033[0m' "$1"; }
@@ -95,7 +95,7 @@ if curl -s -o /dev/null --max-time 1 "http://127.0.0.1:${PORT}/"; then
   echo "Le port ${PORT} est déjà utilisé : relancer avec PORT=<autre port> ./scripts/acceptance.sh" >&2
   exit 2
 fi
-sql "SELECT 1" >/dev/null 2>&1 || { echo "MariaDB ne répond pas : lancer \`docker compose up -d\`" >&2; exit 2; }
+sql "SELECT 1" >/dev/null 2>&1 || { echo "MariaDB ne répond pas : lancer \`make db\`" >&2; exit 2; }
 sql "DROP DATABASE IF EXISTS ${BASE_SQL}; CREATE DATABASE ${BASE_SQL}"
 cargo build --release --quiet --bins
 export DATABASE_URL="mysql://entreprises:entreprises-demo@127.0.0.1:3308/${BASE_SQL}"

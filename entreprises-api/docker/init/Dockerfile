@@ -1,5 +1,5 @@
 # Image du service `init` : les commandes Rust `import` et `creer-utilisateur`, sans l'API.
-# Contexte de build : la racine du projet (voir docker-compose.yml).
+# Contexte de build : le dossier entreprises-api (voir compose.yml à la racine du dépôt).
 
 FROM rust:1.94-slim-trixie AS build
 WORKDIR /src

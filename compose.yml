@@ -1,5 +1,5 @@
-# Base MariaDB, remplie automatiquement par le service `init`, et API Python (`python-api`).
-# L'API Rust tourne hors conteneur (`make run`).
+# Base MariaDB partagée, remplie automatiquement par le service `init`, et API Python (`python-api`).
+# L'API Rust tourne hors conteneur (`make run` dans entreprises-api/).
 #
 #   docker compose up -d      démarre MariaDB (données gardées dans le volume `mariadb-data`),
 #                             la remplit (import + comptes de démo), puis lance l'API Python
@@ -7,7 +7,11 @@
 #   docker compose down       arrête (les données restent)
 #   docker compose down -v    arrête et supprime les données
 #
-# Identifiants de démonstration, identiques à DATABASE_URL et TEST_DATABASE_URL dans .env.example.
+# Identifiants de démonstration, identiques à DATABASE_URL et TEST_DATABASE_URL dans entreprises-api/.env.example.
+
+# Nom fixé : sans lui, il viendrait du dossier (« api-rest ») et Docker créerait un nouveau volume, vide.
+name: entreprises-api
+
 services:
   mariadb:
     image: mariadb:11.8
@@ -24,7 +28,7 @@ services:
     volumes:
       - mariadb-data:/var/lib/mysql
       # Exécuté une seule fois, à la création du volume : base des tests et droits.
-      - ./docker/mariadb/init.sql:/docker-entrypoint-initdb.d/init.sql:ro
+      - ./entreprises-api/docker/mariadb/init.sql:/docker-entrypoint-initdb.d/init.sql:ro
     healthcheck:
       test: ["CMD", "healthcheck.sh", "--connect", "--innodb_initialized"]
       interval: 2s
@@ -36,13 +40,13 @@ services:
   # Le premier build compile les commandes Rust : quelques minutes.
   init:
     build:
-      context: .
+      context: ./entreprises-api
       dockerfile: docker/init/Dockerfile
     container_name: entreprises-init
     environment:
       DATABASE_URL: mysql://entreprises:entreprises-demo@mariadb:3306/entreprises
     volumes:
-      - ./data:/app/data:ro
+      - ./entreprises-api/data:/app/data:ro
     depends_on:
       mariadb:
         condition: service_healthy
@@ -53,8 +57,10 @@ services:
     build: ./python-api
     container_name: entreprises-python-api
     restart: unless-stopped
+    # Même JWT_SECRET et JWT_DUREE_MINUTES que l'API Rust : un token émis par l'une marche sur l'autre.
+    env_file: ./entreprises-api/.env
     environment:
-      # Dans le réseau Docker, MariaDB s'appelle `mariadb` et écoute sur 3306 (pas 3308).
+      # Remplace celle du .env : dans le réseau Docker, MariaDB s'appelle `mariadb` et écoute sur 3306.
       DATABASE_URL: mysql+pymysql://entreprises:entreprises-demo@mariadb:3306/entreprises
     ports:
       - "127.0.0.1:8001:8000"
