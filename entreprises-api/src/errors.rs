@@ -98,21 +98,15 @@ pub enum ApiError {
     /// 401 — JWT absent, invalide ou expiré.
     #[error("authentification requise")]
     NonAuthentifie { token_fourni: bool },
-    /// 401 — connexion refusée : email inconnu ou mot de passe faux (sans dire lequel).
-    #[error("identifiants invalides")]
-    IdentifiantsInvalides,
     /// 403 — compte lecteur sur une action admin.
     #[error("action réservée aux administrateurs")]
     AccesRefuse,
+    /// 403 — token valide, mais compte sans rôle `lecteur` ni `admin` dans Keycloak.
+    #[error("aucun rôle sur cette API")]
+    SansRole,
     /// 404 — entreprise inconnue ou supprimée.
     #[error("entreprise introuvable : {0}")]
     Introuvable(String),
-    /// 404 — utilisateur inconnu.
-    #[error("utilisateur introuvable : {0}")]
-    UtilisateurIntrouvable(i64),
-    /// 409 — email déjà utilisé par un autre compte.
-    #[error("email déjà utilisé")]
-    EmailDejaUtilise,
     /// 415 — `Content-Type: application/json` manquant.
     #[error("type de contenu non supporté")]
     TypeMediaNonSupporte,
@@ -122,6 +116,9 @@ pub enum ApiError {
     /// Autre rejet d'un extracteur Axum (413…) : statut conservé, détail en français.
     #[error("{detail}")]
     Rejet { status: StatusCode, detail: String },
+    /// 503 — clés publiques de Keycloak trop anciennes et Keycloak injoignable : token invérifiable.
+    #[error("fournisseur d'identité indisponible")]
+    FournisseurIndisponible,
     /// 500 — erreur de base de données : détaillée dans les logs, jamais dans la réponse.
     #[error(transparent)]
     Base(#[from] sqlx::Error),
@@ -135,13 +132,13 @@ impl ApiError {
     fn status(&self) -> StatusCode {
         match self {
             Self::RequeteInvalide { .. } => StatusCode::BAD_REQUEST,
-            Self::NonAuthentifie { .. } | Self::IdentifiantsInvalides => StatusCode::UNAUTHORIZED,
-            Self::AccesRefuse => StatusCode::FORBIDDEN,
-            Self::Introuvable(_) | Self::UtilisateurIntrouvable(_) => StatusCode::NOT_FOUND,
-            Self::EmailDejaUtilise => StatusCode::CONFLICT,
+            Self::NonAuthentifie { .. } => StatusCode::UNAUTHORIZED,
+            Self::AccesRefuse | Self::SansRole => StatusCode::FORBIDDEN,
+            Self::Introuvable(_) => StatusCode::NOT_FOUND,
             Self::TypeMediaNonSupporte => StatusCode::UNSUPPORTED_MEDIA_TYPE,
             Self::Validation(_) => StatusCode::UNPROCESSABLE_ENTITY,
             Self::Rejet { status, .. } => *status,
+            Self::FournisseurIndisponible => StatusCode::SERVICE_UNAVAILABLE,
             Self::Base(_) => StatusCode::INTERNAL_SERVER_ERROR,
         }
     }
@@ -156,19 +153,13 @@ impl ApiError {
                 status,
                 "non-authentifie",
                 "Authentification requise",
-                Some("Se connecter via POST /api/v1/tokens, puis envoyer le header Authorization: Bearer <token>.".into()),
+                Some("Se connecter à Keycloak (bouton Authorize de /docs), puis envoyer le header Authorization: Bearer <access_token>.".into()),
             ),
             Self::NonAuthentifie { token_fourni: true } => Problem::new(
                 status,
                 "non-authentifie",
                 "Token invalide ou expiré",
-                Some("Le token est mal formé, expiré ou signé par une autre clé : se reconnecter via POST /api/v1/tokens.".into()),
-            ),
-            Self::IdentifiantsInvalides => Problem::new(
-                status,
-                "identifiants-invalides",
-                "Identifiants invalides",
-                Some("Email ou mot de passe incorrect.".into()),
+                Some("Le token est mal formé, expiré ou n'est pas signé par la clé privée de Keycloak : se reconnecter.".into()),
             ),
             Self::AccesRefuse => Problem::new(
                 status,
@@ -176,17 +167,11 @@ impl ApiError {
                 "Action réservée aux administrateurs",
                 Some("Ce compte a le rôle lecteur : seules les lectures (GET) sont permises.".into()),
             ),
-            Self::UtilisateurIntrouvable(id) => Problem::new(
+            Self::SansRole => Problem::new(
                 status,
-                "introuvable",
-                "Utilisateur introuvable",
-                Some(format!("Aucun utilisateur avec l'identifiant {id}.")),
-            ),
-            Self::EmailDejaUtilise => Problem::new(
-                status,
-                "conflit",
-                "Email déjà utilisé",
-                Some("Un compte existe déjà avec cet email.".into()),
+                "acces-refuse",
+                "Aucun droit sur cette API",
+                Some("Ce compte Keycloak n'a ni le rôle lecteur ni le rôle admin du realm entreprises.".into()),
             ),
             Self::Introuvable(siren) => Problem::new(
                 status,
@@ -215,6 +200,12 @@ impl ApiError {
                 problem.detail = Some(detail.clone());
                 problem
             }
+            Self::FournisseurIndisponible => Problem::new(
+                status,
+                "fournisseur-indisponible",
+                "Keycloak injoignable",
+                Some("Les clés publiques de Keycloak n'ont pas pu être rechargées : réessayer dans un instant.".into()),
+            ),
             Self::Base(_) => Problem::new(
                 status,
                 "erreur-interne",
@@ -289,7 +280,7 @@ impl IntoResponse for ApiError {
         let mut response = reponse_problem(self.status(), self.problem());
         let defi = match self {
             Self::NonAuthentifie { token_fourni: true } => Some(r#"Bearer error="invalid_token""#),
-            Self::NonAuthentifie { token_fourni: false } | Self::IdentifiantsInvalides => Some("Bearer"),
+            Self::NonAuthentifie { token_fourni: false } => Some("Bearer"),
             _ => None,
         };
         if let Some(valeur) = defi {

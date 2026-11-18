@@ -3,10 +3,10 @@
 #
 #   ./scripts/acceptance.sh        (ou : make acceptance ; autre port : PORT=4000 ./scripts/acceptance.sh)
 #
-# Prérequis : MariaDB lancée (`make db`).
+# Prérequis : MariaDB et Keycloak lancés (`make db`).
 #
 # Le script importe le fichier SQL dans une base temporaire (`entreprises_acceptance`, dans le conteneur),
-# lance l'API dessus (port 3999 par défaut), crée deux comptes, se connecte (JWT), vérifie chaque critère E1 à E5,
+# lance l'API dessus (port 3999 par défaut), obtient deux tokens Keycloak (comptes de démo), vérifie chaque critère E1 à E5,
 # les droits, la pagination, la robustesse, le RGPD et les temps de réponse, puis supprime cette base.
 # La base de démonstration `entreprises` n'est jamais touchée.
 set -euo pipefail
@@ -15,11 +15,8 @@ cd "$(dirname "$0")/.."
 PORT="${PORT:-3999}"
 API="http://127.0.0.1:${PORT}/api/v1"
 BASE="${API}/entreprises"
-# Comptes créés dans la base temporaire ; ADMIN et LECTEUR reçoivent ensuite leurs JWT (connexion).
-ADMIN_EMAIL="admin@acceptance.test"
-LECTEUR_EMAIL="lecteur@acceptance.test"
-MDP_ADMIN="mdp-admin-acceptance"
-MDP_LECTEUR="mdp-lecteur-acceptance"
+# Realm Keycloak du compose.yml et comptes de démo (keycloak/realm-entreprises.json).
+KEYCLOAK="${OIDC_ISSUER:-http://127.0.0.1:8080/realms/entreprises}"
 TMP="$(mktemp -d)"
 BASE_SQL="entreprises_acceptance"
 PASS=0
@@ -28,7 +25,7 @@ FAIL=0
 # Rust installé par rustup mais shell pas encore rechargé.
 command -v cargo >/dev/null || { [[ -f "$HOME/.cargo/env" ]] && source "$HOME/.cargo/env"; }
 
-for outil in cargo curl jq openssl docker; do
+for outil in cargo curl jq docker; do
   command -v "$outil" >/dev/null || { echo "Outil manquant : $outil" >&2; exit 2; }
 done
 
@@ -56,10 +53,11 @@ appel() {
   [[ -n "${4:-}" ]] && args+=(-H 'Content-Type: application/json' --data "$4")
   STATUS="$(curl "${args[@]}" "${BASE}$2" || true)"
 }
-# appel_v1 : comme appel, mais le chemin part de /api/v1 (tokens, utilisateurs)
-appel_v1() { local BASE="$API"; appel "$@"; }
-# connexion <email> <mot de passe> → STATUS, corps dans $TMP/body
-connexion() { appel_v1 POST /tokens '' "{\"email\":\"$1\",\"mot_de_passe\":\"$2\"}"; }
+# token_keycloak <email> <mot de passe> : access token du client `swagger` (flux mot de passe, réservé aux scripts)
+token_keycloak() {
+  curl -s --max-time 5 -d client_id=swagger -d grant_type=password --data-urlencode "username=$1" \
+    --data-urlencode "password=$2" "${KEYCLOAK}/protocol/openid-connect/token" | jq -r '.access_token // empty'
+}
 json() { jq -r "$1" "${TMP}/body" 2>/dev/null || echo "(corps non JSON)"; }
 header() { grep -i "^$1:" "${TMP}/headers" | head -1 | cut -d' ' -f2- | tr -d '\r'; }
 # total <query> : meta.total d'une recherche, ou « HTTP <statut> » si elle échoue
@@ -96,54 +94,38 @@ if curl -s -o /dev/null --max-time 1 "http://127.0.0.1:${PORT}/"; then
   exit 2
 fi
 sql "SELECT 1" >/dev/null 2>&1 || { echo "MariaDB ne répond pas : lancer \`make db\`" >&2; exit 2; }
+ADMIN="$(token_keycloak admin@demo.fr admin-demo-mdp)"
+LECTEUR="$(token_keycloak lecteur@demo.fr lecteur-demo-mdp)"
+[[ "$ADMIN" == ey* && "$LECTEUR" == ey* ]] || { echo "Keycloak ne délivre pas de token (${KEYCLOAK}) : lancer \`make db\`" >&2; exit 2; }
 sql "DROP DATABASE IF EXISTS ${BASE_SQL}; CREATE DATABASE ${BASE_SQL}"
 cargo build --release --quiet --bins
 export DATABASE_URL="mysql://entreprises:entreprises-demo@127.0.0.1:3308/${BASE_SQL}"
 ./target/release/import | sed 's/^/  /'
-MOT_DE_PASSE="$MDP_ADMIN" ./target/release/creer-utilisateur "$ADMIN_EMAIL" admin | sed 's/^/  /'
-MOT_DE_PASSE="$MDP_LECTEUR" ./target/release/creer-utilisateur "$LECTEUR_EMAIL" lecteur | sed 's/^/  /'
-JWT_SECRET="$(openssl rand -hex 32)" BIND_ADDR="127.0.0.1:${PORT}" RUST_LOG=warn ./target/release/entreprises-api &
+BIND_ADDR="127.0.0.1:${PORT}" OIDC_ISSUER="$KEYCLOAK" RUST_LOG=warn ./target/release/entreprises-api &
 PID=$!
-# Prêt quand CE serveur (comptes d'acceptation) accepte la connexion de l'admin.
+# Prêt quand CE serveur accepte le token admin.
 for _ in $(seq 1 100); do
   kill -0 "$PID" 2>/dev/null || { echo "L'API de test s'est arrêtée au démarrage." >&2; exit 2; }
-  connexion "$ADMIN_EMAIL" "$MDP_ADMIN"
+  STATUS="$(curl -s -o /dev/null -w '%{http_code}' -H "Authorization: Bearer $ADMIN" "${BASE}/036320596" || true)"
   [[ "$STATUS" == 200 ]] && break
   sleep 0.1
 done
-ADMIN="$(json .access_token)"
-connexion "$LECTEUR_EMAIL" "$MDP_LECTEUR"
-LECTEUR="$(json .access_token)"
-[[ "$ADMIN" == ey* && "$LECTEUR" == ey* ]] || { echo "Connexion impossible aux comptes d'acceptation." >&2; exit 2; }
-echo "  API de test sur http://127.0.0.1:${PORT}, connecté en admin et en lecteur (JWT)"
+echo "  API de test sur http://127.0.0.1:${PORT}, tokens Keycloak admin et lecteur obtenus"
 
-section "Authentification (JWT)"
-connexion "$LECTEUR_EMAIL" "$MDP_LECTEUR"
-check "POST /tokens → 200, Bearer, 900 s" "$STATUS $(json '.token_type + " " + (.expires_in | tostring)')" "200 Bearer 900"
-check "… Cache-Control: no-store" "$(header cache-control)" "no-store"
-check "… le token contient le rôle, pas l'email" \
-  "$(cut -d. -f2 <<< "$LECTEUR" | tr '_-' '/+' | awk '{ while (length($0) % 4) $0 = $0 "="; print }' | base64 -d 2>/dev/null | jq -r '[.role, (tostring | contains("@"))] | join(" ")')" \
-  "lecteur false"
-connexion "$ADMIN_EMAIL" "mauvais-mot-de-passe"
-mauvais_mdp="$(jq -c 'del(.instance)' "${TMP}/body")"
-check "mauvais mot de passe → 401 Identifiants invalides" "$STATUS $(json .title)" "401 Identifiants invalides"
-connexion "personne@acceptance.test" "$MDP_ADMIN"
-check "email inconnu → même réponse (on ne sait pas lequel est faux)" "$STATUS $(jq -c 'del(.instance)' "${TMP}/body")" "401 ${mauvais_mdp}"
-appel_v1 POST /tokens '' '{"email":"x"}'
-check "connexion sans mot de passe → 422" "$STATUS" 422
+section "Authentification (Keycloak, OAuth2)"
+# contenu <token> : partie centrale du JWT, décodée
+contenu() { cut -d. -f2 <<< "$1" | tr '_-' '/+' | awk '{ while (length($0) % 4) $0 = $0 "="; print }' | base64 -d 2>/dev/null; }
+check "token signé par la clé privée de Keycloak (RS256), avec un kid" \
+  "$(cut -d. -f1 <<< "$LECTEUR" | tr '_-' '/+' | awk '{ while (length($0) % 4) $0 = $0 "="; print }' | base64 -d 2>/dev/null | jq -r '[.alg, (.kid | length > 0)] | join(" ")')" "RS256 true"
+check "… émis par le realm, pour l'audience entreprises-api" \
+  "$(contenu "$LECTEUR" | jq -r '[.iss, (.aud | if type == "array" then index("entreprises-api") != null else . == "entreprises-api" end)] | join(" ")')" "${KEYCLOAK} true"
+check "… rôle lecteur, sans rôle admin" "$(contenu "$LECTEUR" | jq -r '.realm_access.roles | [index("lecteur") != null, index("admin") != null] | join(" ")')" "true false"
+check "clé publique publiée (JWKS)" "$(curl -s "${KEYCLOAK}/protocol/openid-connect/certs" | jq -r '[.keys[] | select(.use == "sig")] | length > 0')" "true"
+check "mauvais mot de passe → aucun token" "$(token_keycloak admin@demo.fr mauvais-mot-de-passe)" ""
 falsifie="$(cut -d. -f1 <<< "$LECTEUR").$(cut -d. -f2 <<< "$ADMIN").$(cut -d. -f3 <<< "$LECTEUR")"
 appel DELETE /036320596 "$falsifie"
 check "contenu admin greffé sur une signature lecteur → 401 invalid_token" "$STATUS $(header www-authenticate)" '401 Bearer error="invalid_token"'
-NOUVEAU='{"email":"crm@acceptance.test","mot_de_passe":"mot-de-passe-du-crm","role":"lecteur"}'
-appel_v1 POST /utilisateurs "$LECTEUR" "$NOUVEAU"
-check "création de compte par un lecteur → 403" "$STATUS" 403
-appel_v1 POST /utilisateurs "$ADMIN" "$NOUVEAU"
-check "création de compte par l'admin → 201 + Location, sans mot de passe" \
-  "$STATUS $(header location | cut -d/ -f1-4) $(json 'has("mot_de_passe")')" "201 /api/v1/utilisateurs false"
-appel_v1 POST /utilisateurs "$ADMIN" "$NOUVEAU"
-check "même email → 409" "$STATUS" 409
-connexion "crm@acceptance.test" "mot-de-passe-du-crm"
-check "le nouveau compte peut se connecter" "$STATUS" 200
+check "l'ancienne route de connexion n'existe plus → 404" "$(curl -s -o /dev/null -w '%{http_code}' -X POST "${API}/tokens")" "404"
 
 section "E1 — Retrouver une société par son identifiant"
 appel GET /036320596 "$LECTEUR"

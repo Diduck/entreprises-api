@@ -3,15 +3,16 @@
 # Avec l'extension VS Code « REST Client » (humao.rest-client) : cliquer sur « Send Request »
 # au-dessus de chaque requête. Le serveur doit tourner : `make run` (ou `cargo run`).
 #
-# Authentification par JWT : comptes de démonstration créés par `make utilisateurs-demo`
+# Connexion par Keycloak (lancé par `make db`) : comptes de démonstration du realm `entreprises`
 #   admin@demo.fr / admin-demo-mdp (admin)   lecteur@demo.fr / lecteur-demo-mdp (lecteur)
 # Envoyer d'abord les deux requêtes « Connexion » ci-dessous : les suivantes réutilisent leurs tokens.
-# Un token expire au bout de 15 min : renvoyer alors la connexion.
+# Un token expire au bout de 15 min : renvoyer alors la connexion. Il vaut aussi pour l'API Python (port 8001).
 # Les requêtes PATCH et DELETE modifient entreprises.db. Après elles, 036320596 devient « L'EPI D'OR », 10.71D et cessée :
 # 10.71C compte 22 entreprises au lieu de 23 (13 actives au lieu de 14), « boulangerie » 18 au lieu de 19 (6 actives au lieu de 7),
 # et rejouer la suppression de 005410345 renvoie 404. `make reset` remet les données d'origine, même serveur lancé.
 
 @baseUrl = http://127.0.0.1:3000/api/v1
+@keycloak = http://127.0.0.1:8080/realms/entreprises/protocol/openid-connect
 @admin = {{connexionAdmin.response.body.$.access_token}}
 @lecteur = {{connexionLecteur.response.body.$.access_token}}
 
@@ -20,25 +21,33 @@
 # Connexion — à envoyer en premier
 ############################################################################
 
-### Connexion · 200 — admin : JWT valable 15 min
+### Connexion · 200 — admin : token Keycloak (RS256) valable 15 min
+# Flux « mot de passe » du client `swagger`, réservé aux scripts ; Swagger UI utilise le flux Authorization Code + PKCE.
 # @name connexionAdmin
-POST {{baseUrl}}/tokens
-Content-Type: application/json
+POST {{keycloak}}/token
+Content-Type: application/x-www-form-urlencoded
 
-{ "email": "admin@demo.fr", "mot_de_passe": "admin-demo-mdp" }
+client_id=swagger&grant_type=password&username=admin@demo.fr&password=admin-demo-mdp
 
 ### Connexion · 200 — lecteur
 # @name connexionLecteur
-POST {{baseUrl}}/tokens
-Content-Type: application/json
+POST {{keycloak}}/token
+Content-Type: application/x-www-form-urlencoded
 
-{ "email": "lecteur@demo.fr", "mot_de_passe": "lecteur-demo-mdp" }
+client_id=swagger&grant_type=password&username=lecteur@demo.fr&password=lecteur-demo-mdp
 
-### Connexion · 401 — mauvais mot de passe (même réponse qu'un email inconnu)
-POST {{baseUrl}}/tokens
-Content-Type: application/json
+### Connexion · 401 — mauvais mot de passe (réponse de Keycloak : invalid_grant)
+POST {{keycloak}}/token
+Content-Type: application/x-www-form-urlencoded
 
-{ "email": "admin@demo.fr", "mot_de_passe": "mauvais-mot-de-passe" }
+client_id=swagger&grant_type=password&username=admin@demo.fr&password=mauvais-mot-de-passe
+
+### Clé publique de Keycloak (JWKS) : celle avec laquelle les API vérifient les tokens
+GET {{keycloak}}/certs
+
+### Même token sur l'API Python
+GET http://127.0.0.1:8001/api/v1/stats/creations
+Authorization: Bearer {{lecteur}}
 
 
 ############################################################################
@@ -267,41 +276,3 @@ Authorization: Bearer {{admin}}
 Content-Type: application/json
 
 { "denomination": "L'EPI D'OR" }
-
-
-############################################################################
-# Comptes utilisateurs (admin)
-############################################################################
-
-### Comptes · 201 — créer un compte lecteur (Location : /api/v1/utilisateurs/{id})
-# @name nouveauCompte
-POST {{baseUrl}}/utilisateurs
-Authorization: Bearer {{admin}}
-Content-Type: application/json
-
-{ "email": "crm@demo.fr", "mot_de_passe": "mot-de-passe-du-crm", "role": "lecteur" }
-
-### Comptes · 200 — lire le compte créé
-GET {{baseUrl}}/utilisateurs/{{nouveauCompte.response.body.$.id}}
-Authorization: Bearer {{admin}}
-
-### Comptes · 409 — email déjà utilisé
-POST {{baseUrl}}/utilisateurs
-Authorization: Bearer {{admin}}
-Content-Type: application/json
-
-{ "email": "lecteur@demo.fr", "mot_de_passe": "un-autre-mot-de-passe", "role": "admin" }
-
-### Comptes · 422 — email, mot de passe et rôle refusés d'un coup
-POST {{baseUrl}}/utilisateurs
-Authorization: Bearer {{admin}}
-Content-Type: application/json
-
-{ "email": "pas-un-email", "mot_de_passe": "court", "role": "superadmin" }
-
-### Comptes · 403 — un lecteur ne crée pas de compte
-POST {{baseUrl}}/utilisateurs
-Authorization: Bearer {{lecteur}}
-Content-Type: application/json
-
-{ "email": "x@demo.fr", "mot_de_passe": "mot-de-passe-solide", "role": "admin" }

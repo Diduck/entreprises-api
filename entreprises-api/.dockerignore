@@ -1,4 +1,4 @@
-# Contexte de build du service `init` : seuls Cargo.*, build.rs, migrations/, src/ et docker/init/ servent.
+# Contexte de build des services `init` et `rust-api` : seuls Cargo.*, build.rs, migrations/, src/ et docker/ servent.
 target/
 .git/
 data/

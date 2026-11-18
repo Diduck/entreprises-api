@@ -1,8 +1,8 @@
-# Base MariaDB partagée, remplie automatiquement par le service `init`, et API Python (`python-api`).
-# L'API Rust tourne hors conteneur (`make run` dans entreprises-api/).
+# Tout le projet dans Docker : base MariaDB partagée, remplie automatiquement par le service `init`,
+# Keycloak (connexion unique des deux API), API Rust (`rust-api`) et API Python (`python-api`).
 #
-#   docker compose up -d      démarre MariaDB (données gardées dans le volume `mariadb-data`),
-#                             la remplit (import + comptes de démo), puis lance l'API Python
+#   docker compose up -d --build   démarre MariaDB (données gardées dans le volume `mariadb-data`), la remplit,
+#                                  démarre Keycloak (realm et comptes de démo importés), puis les deux API
 #   docker compose ps         état ; « healthy » = prête à recevoir des connexions
 #   docker compose down       arrête (les données restent)
 #   docker compose down -v    arrête et supprime les données
@@ -35,7 +35,42 @@ services:
       timeout: 5s
       retries: 30
 
-  # Remplit la base puis s'arrête : import des 99 999 entreprises et comptes de démonstration.
+  # Serveur d'identité OAuth2 / OpenID Connect : le seul endroit où l'on se connecte.
+  # Il signe les tokens avec sa clé privée (RS256) ; les deux API les vérifient avec sa clé publique,
+  # publiée sur http://127.0.0.1:8080/realms/entreprises/protocol/openid-connect/certs (JWKS).
+  # Console d'administration : http://127.0.0.1:8080/admin (admin / admin-demo).
+  # Mode développement, sans volume : le realm est réimporté depuis keycloak/ à chaque création du conteneur.
+  keycloak:
+    image: quay.io/keycloak/keycloak:26.8.2
+    container_name: entreprises-keycloak
+    restart: unless-stopped
+    command: ["start-dev", "--import-realm"]
+    environment:
+      KC_BOOTSTRAP_ADMIN_USERNAME: admin
+      KC_BOOTSTRAP_ADMIN_PASSWORD: admin-demo
+      # Adresse publique fixe : l'émetteur (`iss`) des tokens est toujours http://127.0.0.1:8080/realms/entreprises,
+      # même quand l'API Python joint Keycloak par le réseau Docker (http://keycloak:8080).
+      KC_HOSTNAME: http://127.0.0.1:8080
+      KC_HOSTNAME_BACKCHANNEL_DYNAMIC: "true"
+      KC_HEALTH_ENABLED: "true"
+    ports:
+      - "127.0.0.1:8080:8080"
+    volumes:
+      - ./keycloak:/opt/keycloak/data/import:ro
+    healthcheck:
+      # Pas de curl dans l'image : requête HTTP à la main sur le port de gestion (9000).
+      test:
+        - CMD-SHELL
+        - >-
+          exec 3<>/dev/tcp/127.0.0.1/9000 &&
+          printf 'GET /health/ready HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n' >&3 &&
+          grep -q '"UP"' <&3
+      interval: 5s
+      timeout: 5s
+      retries: 40
+      start_period: 10s
+
+  # Remplit la base puis s'arrête : import des 99 999 entreprises.
   # Relancé à chaque `up`, sans risque (modifications PATCH et suppressions conservées).
   # Le premier build compile les commandes Rust : quelques minutes.
   init:
@@ -51,17 +86,62 @@ services:
       mariadb:
         condition: service_healthy
 
+  # API Rust (Axum) : recherche, consultation, modification, suppression des entreprises.
+  # Swagger : http://127.0.0.1:3000/docs
+  # Le code est compilé dans l'image : après une modification, `docker compose up -d --build rust-api`
+  # (ou `make run` dans entreprises-api/ pour développer hors conteneur).
+  rust-api:
+    build:
+      context: ./entreprises-api
+      dockerfile: docker/api/Dockerfile
+    container_name: entreprises-rust-api
+    restart: unless-stopped
+    environment:
+      # Dans le réseau Docker, MariaDB s'appelle `mariadb` et écoute sur 3306.
+      DATABASE_URL: mysql://entreprises:entreprises-demo@mariadb:3306/entreprises
+      # 0.0.0.0 : joignable depuis l'extérieur du conteneur (le port n'est publié que sur 127.0.0.1).
+      BIND_ADDR: 0.0.0.0:3000
+      # Mêmes valeurs que l'API Python : un token Keycloak vaut pour les deux API.
+      OIDC_ISSUER: http://127.0.0.1:8080/realms/entreprises
+      OIDC_AUDIENCE: entreprises-api
+      # Clé publique lue par le réseau Docker (127.0.0.1 désignerait le conteneur lui-même).
+      OIDC_JWKS_URL: http://keycloak:8080/realms/entreprises/protocol/openid-connect/certs
+      RUST_LOG: entreprises_api=info,tower_http=info
+    ports:
+      - "127.0.0.1:3000:3000"
+    healthcheck:
+      # Pas de curl dans l'image : requête HTTP à la main, en bash.
+      test:
+        - CMD
+        - bash
+        - -c
+        - >-
+          exec 3<>/dev/tcp/127.0.0.1/3000 &&
+          printf 'GET /docs/ HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n' >&3 &&
+          grep -q '200 OK' <&3
+      interval: 5s
+      timeout: 5s
+      retries: 20
+    depends_on:
+      init:
+        condition: service_completed_successfully
+      keycloak:
+        condition: service_healthy
+
   # API Python (FastAPI + pandas) : lit la même base MariaDB que l'API Rust.
   # Swagger : http://127.0.0.1:8001/docs
   python-api:
     build: ./python-api
     container_name: entreprises-python-api
     restart: unless-stopped
-    # Même JWT_SECRET et JWT_DUREE_MINUTES que l'API Rust : un token émis par l'une marche sur l'autre.
-    env_file: ./entreprises-api/.env
     environment:
-      # Remplace celle du .env : dans le réseau Docker, MariaDB s'appelle `mariadb` et écoute sur 3306.
+      # Dans le réseau Docker, MariaDB s'appelle `mariadb` et écoute sur 3306.
       DATABASE_URL: mysql+pymysql://entreprises:entreprises-demo@mariadb:3306/entreprises
+      # Mêmes valeurs que l'API Rust (entreprises-api/.env) : un token Keycloak vaut pour les deux API.
+      OIDC_ISSUER: http://127.0.0.1:8080/realms/entreprises
+      OIDC_AUDIENCE: entreprises-api
+      # Clé publique lue par le réseau Docker (127.0.0.1 désignerait le conteneur lui-même).
+      OIDC_JWKS_URL: http://keycloak:8080/realms/entreprises/protocol/openid-connect/certs
     ports:
       - "127.0.0.1:8001:8000"
     volumes:
@@ -71,6 +151,8 @@ services:
     depends_on:
       init:
         condition: service_completed_successfully
+      keycloak:
+        condition: service_healthy
 
 volumes:
   mariadb-data:

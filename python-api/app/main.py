@@ -1,13 +1,20 @@
 import pandas as pd
-from fastapi import APIRouter, Depends, FastAPI, Response
+from fastapi import APIRouter, Depends, FastAPI
+from fastapi.openapi.docs import get_swagger_ui_oauth2_redirect_html
 from fastapi.responses import HTMLResponse
-from pydantic import BaseModel, Field
 
-from app.auth import JWT_DUREE_SECONDES, authentifier, emettre, lecteur, non_authentifie
+from app.auth import CLIENT_SWAGGER, lecteur
 from app.db import engine
 
 # `/docs` est servie plus bas, pour fixer la version de Swagger UI.
-app = FastAPI(title="API Python", version="0.1.0", docs_url=None)
+app = FastAPI(
+    title="API Python",
+    version="0.1.0",
+    docs_url=None,
+    description="Statistiques sur les entreprises Sirene.\n\n"
+    "**Connexion** : bouton **Authorize** → **Authorize** → page de connexion Keycloak "
+    "(ex. `lecteur@demo.fr` / `lecteur-demo-mdp`). La même connexion vaut pour l'API Rust.",
+)
 
 # Même version que l'API Rust (embarquée par utoipa-swagger-ui 10.0.1).
 SWAGGER_UI = "https://cdn.jsdelivr.net/npm/swagger-ui-dist@5.32.6"
@@ -38,10 +45,19 @@ def documentation():
       layout: "StandaloneLayout",
       presets: [SwaggerUIBundle.presets.apis, SwaggerUIStandalonePreset],
       plugins: [SwaggerUIBundle.plugins.DownloadUrl],
+      oauth2RedirectUrl: window.location.origin + "/docs/oauth2-redirect.html",
     }});
+    // Bouton Authorize : connexion Keycloak, flux Authorization Code + PKCE (client public, sans secret).
+    window.ui.initOAuth({{ clientId: "{CLIENT_SWAGGER}", usePkceWithAuthorizationCodeGrant: true }});
   </script>
 </body>
 </html>"""
+
+
+# Page où Keycloak renvoie le navigateur après la connexion : elle transmet le code à Swagger UI.
+@app.get("/docs/oauth2-redirect.html", include_in_schema=False)
+def redirection_oauth2():
+    return get_swagger_ui_oauth2_redirect_html()
 
 # Même préfixe versionné que l'API Rust.
 api_v1 = APIRouter(prefix="/api/v1")
@@ -64,32 +80,6 @@ def compter(valeurs: pd.Series, trier_par_valeur: bool = False) -> list[dict]:
     # NaN n'est pas du JSON valide : on le remplace par None (→ null).
     comptes = comptes.astype(object).where(comptes.notna(), None)
     return comptes.to_dict(orient="records")
-
-
-class Connexion(BaseModel):
-    email: str = Field(min_length=1, examples=["lecteur@demo.fr"])
-    mot_de_passe: str = Field(min_length=1, examples=["lecteur-demo-mdp"])
-
-
-class TokenEmis(BaseModel):
-    access_token: str
-    token_type: str = "Bearer"
-    expires_in: int = Field(description="Durée de validité, en secondes.")
-
-
-@api_v1.post(
-    "/tokens",
-    response_model=TokenEmis,
-    responses={401: {"description": "Email ou mot de passe incorrect"}},
-)
-def connexion(corps: Connexion, response: Response):
-    """Se connecter : renvoie un token, valable aussi sur l'API Rust (mêmes comptes)."""
-    compte = authentifier(corps.email, corps.mot_de_passe)
-    if compte is None:
-        raise non_authentifie("Email ou mot de passe incorrect.")
-    # Un token ne doit être gardé par aucun cache (RFC 6749 § 5.1).
-    response.headers["Cache-Control"] = "no-store"
-    return TokenEmis(access_token=emettre(compte), expires_in=JWT_DUREE_SECONDES)
 
 
 @api_v1.get("/health")

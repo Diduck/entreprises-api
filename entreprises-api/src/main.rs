@@ -26,13 +26,11 @@ async fn main() -> anyhow::Result<()> {
     if entreprises == 0 {
         tracing::warn!("la table entreprises est vide : lancer `cargo run --bin import`");
     }
-    let admins: i64 =
-        sqlx::query_scalar("SELECT COUNT(*) FROM utilisateurs WHERE role = 'admin'").fetch_one(&pool).await?;
-    if admins == 0 {
-        tracing::warn!("aucun compte admin : en créer un avec `make utilisateur EMAIL=… ROLE=admin`");
+    // Keycloak absent au démarrage : pas bloquant, les clés seront chargées au premier token reçu.
+    match config.jwt.charger_cles().await {
+        Ok(nombre) => tracing::info!("{nombre} clé(s) publique(s) de Keycloak chargée(s) ({})", config.jwt.emetteur()),
+        Err(erreur) => tracing::warn!("clés publiques de Keycloak non chargées : {erreur} (`make db` lance Keycloak)"),
     }
-
-    entreprises_api::utilisateurs::prechauffer();
 
     let listener = TcpListener::bind(&config.bind_addr)
         .await

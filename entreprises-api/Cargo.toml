@@ -7,22 +7,20 @@ default-run = "entreprises-api"
 
 [dependencies]
 anyhow = "1.0"
-argon2 = "0.6"
 axum = "0.8.9"
 axum-extra = { version = "0.12.6", features = ["typed-header", "with-rejection"] }
 deunicode = "1.6"
 dotenvy = "0.15"
-hex = "0.4"
-jsonwebtoken = { version = "11.1", default-features = false, features = ["rust_crypto"] }
+jsonwebtoken = { version = "11.1", default-features = false, features = ["rust_crypto", "use_pem"] }
 regex = "1.13"
+# Téléchargement des clés publiques de Keycloak (JWKS), en HTTP local : pas de TLS embarqué.
+reqwest = { version = "0.13.5", default-features = false }
 serde = { version = "1.0", features = ["derive"] }
 serde_json = { version = "1.0", features = ["preserve_order"] }
 serde_with = "3.23"
-sha2 = "0.11"
 sqlx = { version = "0.9.0", default-features = false, features = ["runtime-tokio", "mysql", "macros", "migrate"] }
-subtle = "2.6"
 thiserror = "2.0"
-tokio = { version = "1.53", features = ["macros", "rt-multi-thread", "net", "signal"] }
+tokio = { version = "1.53", features = ["macros", "rt-multi-thread", "net", "signal", "sync", "time"] }
 tower-http = { version = "0.7.1", features = ["trace", "timeout"] }
 tracing = "0.1.44"
 tracing-subscriber = { version = "0.3.23", features = ["env-filter"] }
@@ -32,3 +30,4 @@ validator = { version = "0.21", features = ["derive"] }
 
 [dev-dependencies]
 axum-test = "21.1"
+base64 = "0.22"

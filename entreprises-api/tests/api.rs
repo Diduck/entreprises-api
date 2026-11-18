@@ -4,36 +4,29 @@
 //! Dans l'extrait : `10.71C` → 5 entreprises (3 actives), `15.8C` → 2,
 //! « boulangerie » → 4 (2 actives), `000325175` → l'entrepreneur JANOYER Thierry.
 
+mod common;
+
 use axum::{
     body::Bytes,
     http::{StatusCode, header},
 };
 use axum_test::{TestResponse, TestServer};
-use std::{sync::LazyLock, time::Duration};
+use std::sync::LazyLock;
 
-use entreprises_api::{
-    AppState,
-    auth::{Identite, Jwt, Role},
-    build_app, import,
-};
+use entreprises_api::{AppState, build_app, import};
 use serde_json::{Value, json};
 use sqlx::MySqlPool;
 
-const SECRET: &str = "secret-jwt-des-tests-d-integration-api";
-/// JWT signés avec le secret des tests (les comptes eux-mêmes sont testés dans `tests/auth.rs`).
-static ADMIN: LazyLock<String> = LazyLock::new(|| jwt().emettre(Identite { id: 1, role: Role::Admin }));
-static LECTEUR: LazyLock<String> = LazyLock::new(|| jwt().emettre(Identite { id: 2, role: Role::Lecteur }));
-
-fn jwt() -> Jwt {
-    Jwt::new(SECRET, Duration::from_secs(900)).expect("secret de test")
-}
+/// Tokens signés par la clé privée de test, comme Keycloak (la vérification est testée dans `tests/auth.rs`).
+static ADMIN: LazyLock<String> = LazyLock::new(common::admin);
+static LECTEUR: LazyLock<String> = LazyLock::new(common::lecteur);
 const FIXTURE: &str = include_str!("fixtures/entreprises.sql");
 const EPI_DOR: &str = "/api/v1/entreprises/036320596";
 const RECHERCHE: &str = "/api/v1/entreprises";
 
 async fn serveur(pool: &MySqlPool) -> TestServer {
     import::recopier(pool).await.expect("import de la fixture");
-    TestServer::new(build_app(AppState::new(pool.clone(), jwt())))
+    TestServer::new(build_app(AppState::new(pool.clone(), common::jwt())))
 }
 
 /// Recharge le fichier SQL de l'extrait puis relance l'import (réimport).

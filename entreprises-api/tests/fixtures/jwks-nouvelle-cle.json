@@ -1,0 +1,12 @@
+{
+  "keys": [
+    {
+      "kid": "nouvelle-cle",
+      "kty": "RSA",
+      "alg": "RS256",
+      "use": "sig",
+      "n": "jHAPh0Tk3lfUf_2LVkPrpkaB96pZAFoG2Qo-nxCUleT9C4jMAWCPK7zJey49Qly1XKQT_JOyNeVIX1qJkUDs6Q8sDBTNO6NFXZK657UCLYs5TC8JSsL9cA2K5a2EJXxNaxtwZWZUzFJYsKgi27TtEKbfLlI8HHxgO2fMpRMX10WXjPOrq2HFIta0t5vaUPPS1UfcJ9UJyI9E4Gh33F4HGxoy5Z1-RLxTCYTc6ILD7mFjT5Akc1c27HsF75E6gMt3_6IiJglQ8g0RqtDMGD6aGnwFgazSt7grNw6KEO_uKMfrYlg5AeyOqXPUDgeBF2QEpc3TFGFIHk40VE4TxFmNFw",
+      "e": "AQAB"
+    }
+  ]
+}

@@ -2,19 +2,23 @@
 
 Complément du [README](../README.md) : fonctionnement interne, tests et choix d'implémentation.
 
-## MariaDB dans Docker
+## Docker : MariaDB, Keycloak, les deux API
 
-`compose.yml`, à la racine du dépôt, lance trois services ; l'API Rust tourne sur la machine (`make run`). Le Makefile l'appelle avec `docker compose -f ../compose.yml` ; à la main, taper les commandes `docker compose` depuis la racine du dépôt.
+`compose.yml`, à la racine du dépôt, lance cinq services. Pour développer l'API Rust hors conteneur : `make run`, qui arrête d'abord le service `rust-api`. Le Makefile l'appelle avec `docker compose -f ../compose.yml` ; à la main, taper les commandes `docker compose` depuis la racine du dépôt.
 
 | Service | Rôle |
 | --- | --- |
 | `mariadb` | La base, port hôte 3308 |
-| `init` | Lance `import` puis crée les comptes de démo, et s'arrête. Image construite par `docker/init/Dockerfile` (contexte : ce dossier) (commandes Rust compilées dans Docker), script `docker/init/init.sh`, fichier SQL monté depuis `data/`. Relancé à chaque `up` : l'import est idempotent (environ 3 s). |
-| `python-api` | API Python (FastAPI + pandas), port hôte 8001, démarrée une fois `init` terminé avec succès. `POST /api/v1/tokens` comme l'API Rust (mêmes comptes, Argon2id) ; routes `/api/v1/stats/*` réservées aux rôles lecteur et admin. Même `JWT_SECRET` et même `JWT_DUREE_MINUTES`, lus dans `.env`, mêmes règles (`../python-api/app/auth.py`) : un token émis par une API est valable sur l'autre. `/api/v1/health` reste publique. |
+| `keycloak` | Serveur d'identité OAuth2 / OpenID Connect (Keycloak 26.8, mode `start-dev`), port hôte 8080. Importe le realm `entreprises` depuis `../keycloak/` (rôles, client `swagger`, comptes de démo) à chaque création du conteneur, sans volume. `KC_HOSTNAME` fixe l'émetteur à `http://127.0.0.1:8080/realms/entreprises`, même vu du réseau Docker. Console : <http://127.0.0.1:8080/admin> (`admin` / `admin-demo`). |
+| `init` | Lance `import` et s'arrête. Image construite par `docker/init/Dockerfile` (contexte : ce dossier) (commandes Rust compilées dans Docker), script `docker/init/init.sh`, fichier SQL monté depuis `data/`. Relancé à chaque `up` : l'import est idempotent (environ 3 s). |
+| `rust-api` | Cette API, port hôte 3000. Image construite par `docker/api/Dockerfile` (binaire seul, utilisateur sans droits, migrations embarquées). Base sur `mariadb:3306`, clé publique de Keycloak sur `http://keycloak:8080`, émetteur attendu `http://127.0.0.1:8080/realms/entreprises`. Démarrée une fois `init` terminé et Keycloak prêt. Après une modification du code : `make db` (ou `docker compose up -d --build rust-api`). |
+| `python-api` | API Python (FastAPI + pandas), port hôte 8001, démarrée une fois `init` terminé et Keycloak prêt. Routes `/api/v1/stats/*` réservées aux rôles lecteur et admin ; mêmes émetteur, audience et vérification RS256 que l'API Rust (`../python-api/app/auth.py`), clé publique lue sur `http://keycloak:8080` : un token Keycloak vaut pour les deux API. `/api/v1/health` reste publique. |
 
 | Commande | Effet |
 | --- | --- |
-| `make db` | Démarre les trois services et attend qu'ils soient prêts |
+| `make db` | Construit les images, démarre les cinq services et attend qu'ils soient prêts (Keycloak : 20 à 40 s) |
+| `docker compose logs -f rust-api` | Journaux de l'API Rust |
+| `docker compose logs keycloak` | Journaux de Keycloak (import du realm) |
 | `docker compose logs init` | Résultat du dernier import |
 | `make db-shell` | Console SQL dans la base `entreprises` (`SHOW TABLES;`, `SELECT COUNT(*) FROM entreprises;`) |
 | `make db-stop` | Arrête le conteneur ; les données restent dans le volume `mariadb-data` |
@@ -23,11 +27,11 @@ Complément du [README](../README.md) : fonctionnement interne, tests et choix d
 
 Au premier démarrage, `docker/mariadb/init.sql` crée la base des tests `entreprises_tests` et donne à l'utilisateur `entreprises` les droits sur les bases de test. Ce script ne tourne qu'à la création du volume : après l'avoir modifié, repartir de zéro avec `docker compose down -v`.
 
-Pour un vrai compte admin (mot de passe demandé sans être affiché) : `make utilisateur EMAIL=moi@exemple.fr ROLE=admin`.
+Pour un vrai compte : console Keycloak, voir [Authentification](#authentification-keycloak-oauth2--openid-connect).
 
 ## Documentation OpenAPI
 
-La spécification est générée à la compilation par [`utoipa`](https://docs.rs/utoipa) 6 à partir du code : les attributs `#[utoipa::path]` sur les handlers et les `#[derive(ToSchema)]` sur les modèles. Elle ne peut donc pas diverger des types Rust. La page est servie par `utoipa-swagger-ui` 10, dont les fichiers Swagger UI sont embarqués dans le binaire (feature `vendored`, aucun téléchargement au build). Les pages `/docs` et `/api-docs` sont publiques ; les routes de l'API restent protégées par JWT.
+La spécification est générée à la compilation par [`utoipa`](https://docs.rs/utoipa) 6 à partir du code : les attributs `#[utoipa::path]` sur les handlers et les `#[derive(ToSchema)]` sur les modèles. Elle ne peut donc pas diverger des types Rust. La page est servie par `utoipa-swagger-ui` 10, dont les fichiers Swagger UI sont embarqués dans le binaire (feature `vendored`, aucun téléchargement au build). Les pages `/docs` et `/api-docs` sont publiques ; les routes de l'API restent protégées (schéma OAuth2 `keycloak`, flux Authorization Code + PKCE, configuré dans Swagger UI avec le client `swagger`).
 
 ## Tester les routes
 
@@ -37,8 +41,8 @@ Quatre niveaux, du plus visuel au plus complet :
 | --- | --- | --- |
 | **Swagger UI** | `make run`, puis <http://127.0.0.1:3000/docs> | Documentation interactive : schémas, exemples et bouton « Try it out » sur chaque route. |
 | **`requests.http`** | Ouvrir le fichier dans VS Code, cliquer « Send Request » | 46 requêtes prêtes : connexion, les exemples du contrat (E1 à E5), les erreurs, les droits et les comptes. Envoyer d'abord les deux « Connexion ». Extension [REST Client](https://marketplace.visualstudio.com/items?itemName=humao.rest-client), proposée à l'ouverture du projet. |
-| **`make acceptance`** | `./scripts/acceptance.sh` | Importe le jeu complet dans une base MariaDB **temporaire** (`entreprises_acceptance`), crée deux comptes, lance un vrai serveur et vérifie 73 critères, puis nettoie. Couverture : connexion et JWT, totaux 23 / 14 / 19 / 7, codes 401 / 403 / 405 / 415 / 422, droit à l'oubli après réimport, robustesse, p95. La base `entreprises` n'est pas touchée. |
-| **`make test`** | `cargo test` avec `DATABASE_URL=$TEST_DATABASE_URL` | 35 tests unitaires (normalisation, validation, pagination, JWT, mots de passe) et 49 tests d'intégration `axum-test` + `#[sqlx::test]` (38 pour E1 à E5, 11 pour l'authentification). Chaque test d'intégration part d'une base MariaDB neuve (`_sqlx_test_…`, créée puis supprimée par `#[sqlx::test]`) : MariaDB doit tourner (`make db`). S'y ajoutent 5 tests de la documentation (`tests/docs.rs`), qui tournent sans base : Swagger UI servie, les 7 routes documentées, la sécurité JWT et les erreurs problem+json. |
+| **`make acceptance`** | `./scripts/acceptance.sh` | Importe le jeu complet dans une base MariaDB **temporaire** (`entreprises_acceptance`), obtient deux tokens Keycloak (comptes de démo), lance un vrai serveur et vérifie 69 critères, puis nettoie. Keycloak doit tourner (`make db`). Couverture : tokens Keycloak (RS256, émetteur, audience, rôles, falsification), totaux 23 / 14 / 19 / 7, codes 401 / 403 / 405 / 415 / 422, droit à l'oubli après réimport, robustesse, p95. La base `entreprises` n'est pas touchée. |
+| **`make test`** | `cargo test` avec `DATABASE_URL=$TEST_DATABASE_URL` | 26 tests unitaires (normalisation, validation, pagination, lecture du JWKS) et 38 tests d'intégration `axum-test` + `#[sqlx::test]` pour E1 à E5 : chacun part d'une base MariaDB neuve (`_sqlx_test_…`, créée puis supprimée par `#[sqlx::test]`), MariaDB doit tourner (`make db`). S'y ajoutent, sans base ni Keycloak : 3 tests de rotation des clés (`tests/rotation.rs`, faux Keycloak local), 11 tests de l'authentification (`tests/auth.rs` : autre clé privée, `kid` inconnu, expiration, émetteur, audience, rôles, `alg: none`, HS256 signé avec la clé publique) et 6 tests de la documentation (`tests/docs.rs` : Swagger UI, les 4 routes, le schéma OAuth2, PKCE, problem+json). Keycloak y est remplacé par une paire de clés RSA de test (`tests/common/`). |
 
 ## Endpoints
 
@@ -48,9 +52,6 @@ Quatre niveaux, du plus visuel au plus complet :
 | GET | `/api/v1/entreprises?activite_principale=&denomination=&etat_administratif=&sort=&offset=&limit=&fields=` | lecteur | 200 + page | 400, 401 |
 | PATCH | `/api/v1/entreprises/{siren}` | admin | 200 | 400, 401, 403, 404, 415, 422 |
 | DELETE | `/api/v1/entreprises/{siren}` | admin | 204 | 400, 401, 403, 404 |
-| POST | `/api/v1/tokens` | public | 200 + JWT | 400, 401, 415, 422 |
-| POST | `/api/v1/utilisateurs` | admin | 201 + `Location` | 400, 401, 403, 409, 415, 422 |
-| GET | `/api/v1/utilisateurs/{id}` | admin | 200 | 400, 401, 403, 404 |
 
 - `POST`, `PUT` et `OPTIONS` → 405 avec le header `Allow`.
 - Toutes les erreurs sont en `application/problem+json` (RFC 9457), avec `errors[{champ, message}]` pour les 422.
@@ -68,28 +69,57 @@ Variables d'environnement, lues aussi depuis `.env` :
 | `DATABASE_URL` | `mysql://entreprises:entreprises-demo@127.0.0.1:3308/entreprises` | Base MariaDB (doit exister : créée par le conteneur) |
 | `TEST_DATABASE_URL` | — | Base de `make test`, où `#[sqlx::test]` note ses bases jetables |
 | `BIND_ADDR` | `127.0.0.1:3000` | Adresse d'écoute |
-| `JWT_SECRET` | — (obligatoire) | Clé de signature des JWT, 32 caractères au moins : `openssl rand -hex 32` |
-| `JWT_DUREE_MINUTES` | `15` | Durée de validité d'un token (1 à 1440) |
+| `OIDC_ISSUER` | `http://127.0.0.1:8080/realms/entreprises` | Realm Keycloak : émetteur (`iss`) exigé dans les tokens |
+| `OIDC_AUDIENCE` | `entreprises-api` | Audience (`aud`) exigée dans les tokens |
+| `OIDC_JWKS_URL` | `<OIDC_ISSUER>/protocol/openid-connect/certs` | Clés publiques de Keycloak (JWKS), en HTTP |
 | `RUST_LOG` | `entreprises_api=info,tower_http=info` | Logs : méthode, chemin, statut, durée |
 
-## Authentification (JWT)
+## Authentification (Keycloak, OAuth2 / OpenID Connect)
 
-1. **Comptes** : table `utilisateurs` (email, rôle `admin` ou `lecteur`). Le mot de passe n'est jamais stocké :
-   seule son empreinte Argon2id l'est. Le premier admin se crée en ligne de commande (`make utilisateur`),
-   les suivants via `POST /api/v1/utilisateurs` (admin). Mot de passe : 12 à 128 caractères.
-2. **Connexion** : `POST /api/v1/tokens` avec `{ "email", "mot_de_passe" }` renvoie
-   `{ "access_token", "token_type": "Bearer", "expires_in": 900 }` (noms de la RFC 6749).
-   Un email inconnu et un mauvais mot de passe donnent la même réponse 401, dans le même temps.
-3. **Requêtes** : header `Authorization: Bearer <access_token>`. Le JWT (HS256, signé avec `JWT_SECRET`) contient
-   l'identifiant du compte (`sub`), son rôle et son expiration ; l'API le vérifie sans lire la base.
-   Token absent → 401 ; mal formé, falsifié ou expiré → 401 `invalid_token` ; lecteur sur une écriture → 403.
+Les comptes et la connexion sont dans **Keycloak** (conteneur `keycloak` du `compose.yml`, realm `entreprises`
+importé depuis [`keycloak/realm-entreprises.json`](../../keycloak/realm-entreprises.json)). Les deux API ne gèrent
+plus aucun compte : elles vérifient seulement les tokens, d'où **une seule connexion pour les deux**.
+
+1. **Clé privée / clé publique** : Keycloak génère une paire de clés RSA par realm. Il signe chaque access token
+   (JWT) avec la **clé privée**, qu'il est le seul à détenir. Il publie la **clé publique** au format JWKS
+   (`OIDC_JWKS_URL`). L'API la télécharge au démarrage : elle peut vérifier une signature, jamais en fabriquer une.
+   Les clés sont rechargées dès qu'elles ont plus de **5 minutes**, et tout de suite quand un token arrive avec
+   un `kid` inconnu (au plus une tentative toutes les 10 s). Une clé retirée de Keycloak n'est donc plus acceptée
+   au bout de 5 minutes au plus. Si Keycloak est injoignable à ce moment-là : **503**, plutôt que de continuer à
+   croire des clés peut-être retirées. Même règle côté Python (`PyJWKClient`, `lifespan=300`, `cache_keys=False`).
+2. **Connexion** : flux OAuth2 *Authorization Code* + PKCE avec le client public `swagger` (bouton **Authorize**
+   de `/docs` → page de connexion Keycloak → retour sur `/docs/oauth2-redirect.html`). La session Keycloak
+   (cookie) évite de retaper le mot de passe sur la seconde API. Le client accepte aussi le flux « mot de passe »
+   (`grant_type=password`), réservé aux scripts de démonstration (`requests.http`, `make acceptance`).
+3. **Vérification** à chaque requête, sans appel à Keycloak : signature RS256 uniquement (ni `none`, ni HS256),
+   `iss` = `OIDC_ISSUER`, `aud` contient `entreprises-api` (ajouté par un *audience mapper* du client), `exp`.
+   Rôles lus dans `realm_access.roles` : `lecteur` (GET) ou `admin` (composite : inclut `lecteur`).
+   Token absent → 401 ; mal formé, falsifié, expiré, autre émetteur ou autre audience → 401 `invalid_token` ;
+   lecteur sur une écriture → 403 ; compte sans aucun de ces rôles → 403.
+4. **Comptes** : console Keycloak <http://127.0.0.1:8080/admin> (`admin` / `admin-demo`), realm `entreprises`,
+   *Users* → ajouter l'utilisateur, lui donner un mot de passe et le rôle `lecteur` ou `admin`.
+
+**Si la clé privée de Keycloak a fuité** (quiconque la détient peut fabriquer des tokens admin) :
+
+1. Console Keycloak → realm `entreprises` → *Realm settings* → onglet *Keys* → *Providers* → *Add provider* →
+   `rsa-generated`, avec une *Priority* plus haute que celle de la clé actuelle (ex. 200) → *Save*.
+   Keycloak signe aussitôt les nouveaux tokens avec cette nouvelle clé.
+2. Même onglet : **supprimer** l'ancien provider `rsa-generated` (désactiver seulement *Active* ne suffit pas :
+   la clé resterait publiée pour vérification).
+3. Au plus 5 minutes après, les deux API ont rechargé le JWKS et refusent tout token signé par l'ancienne clé
+   (401). Les utilisateurs se reconnectent (Authorize) et reçoivent un token signé par la nouvelle clé.
+
+Testé par `tests/rotation.rs` (faux Keycloak dont le JWKS change, durée réduite à 1 s).
 
 Limites connues :
 
-- Pas de refresh token ni de déconnexion côté serveur : un token reste valable jusqu'à son expiration (15 min),
-  même si le compte est supprimé ou change de rôle. Changer `JWT_SECRET` invalide tous les tokens d'un coup.
-- Pas de limite du nombre de tentatives de connexion : à ajouter avant une exposition publique.
-- Les logs tracent l'identifiant du compte (`par=1` sur un `DELETE`), jamais son email.
+- Une clé retirée reste acceptée **5 minutes au plus** (délai de rechargement) : c'est la fenêtre d'exposition.
+- Un token reste valable jusqu'à son expiration (15 min, `accessTokenLifespan` du realm), même si le compte est
+  désactivé ou change de rôle : l'API ne consulte pas Keycloak à chaque requête.
+- Keycloak tourne en mode développement (`start-dev`, HTTP, base interne) : en production, HTTPS, base externe
+  et hostname réel ; le JWKS en HTTPS demanderait alors d'activer TLS dans `reqwest`.
+- La migration `20261118000001` supprime l'ancienne table `utilisateurs` (comptes locaux Argon2id).
+- Les logs tracent l'identifiant Keycloak du compte (`par=<uuid>` sur un `DELETE`), jamais son email.
 
 ## Import des données
 
@@ -121,8 +151,7 @@ src/
 ├── lib.rs          build_app(state) -> Router, partagé avec les tests
 ├── routes.rs       déclaration des routes
 ├── handlers.rs     E1 à E5
-├── auth.rs         JWT (émission, vérification HS256), extracteurs Lecteur / Admin
-├── utilisateurs.rs comptes : Argon2id, lecture / création en base, validation des corps JSON
+├── auth.rs         vérification des tokens Keycloak (RS256, clés publiques JWKS), extracteurs Lecteur / Admin
 ├── models.rs       Entreprise, recherche (filtres, tri, pagination, fields), PatchEntreprise + validation
 ├── repository.rs   requêtes SQLx (QueryBuilder + push_bind, tri en liste blanche)
 ├── errors.rs       ApiError, conversion des rejets Axum, middleware problem+json
@@ -131,9 +160,10 @@ src/
 ├── config.rs       variables d'environnement, pool MariaDB
 ├── import.rs       chargement du fichier SQL, recopie, réinitialisation
 ├── bin/import.rs   commande d'import
-└── bin/creer-utilisateur.rs  création d'un compte en ligne de commande (premier admin)
 tests/api.rs        tests d'intégration E1 à E5 et robustesse
-tests/auth.rs       tests d'intégration connexion, JWT et comptes
+tests/auth.rs       tests de la vérification des tokens (clé publique, émetteur, audience, rôles, attaques)
+tests/rotation.rs   rotation des clés : clé retirée refusée, nouvelle clé acceptée, Keycloak injoignable → 503
+tests/common/       faux Keycloak : paires de clés RSA réservées aux tests (tests/fixtures/cle-*.pem, jwks-*.json)
 tests/docs.rs       tests de la documentation OpenAPI (sans base)
 scripts/acceptance.sh
 requests.http

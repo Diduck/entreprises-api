@@ -5,15 +5,17 @@ use std::time::Duration;
 use anyhow::Context;
 use sqlx::{MySqlPool, mysql::MySqlPoolOptions};
 
-use crate::auth::{Jwt, SECRET_MIN};
+use crate::auth::Jwt;
 
-/// Base du `docker-compose.yml` (`docker compose up -d`).
+/// Base du `compose.yml` (`docker compose up -d`).
 pub const DATABASE_URL_DEFAUT: &str = "mysql://entreprises:entreprises-demo@127.0.0.1:3308/entreprises";
 pub const BIND_ADDR_DEFAUT: &str = "127.0.0.1:3000";
-/// Durée de validité d'un JWT, en minutes.
-pub const JWT_DUREE_DEFAUT: u64 = 15;
+/// Realm Keycloak du `compose.yml` : émetteur (`iss`) des tokens.
+pub const OIDC_ISSUER_DEFAUT: &str = "http://127.0.0.1:8080/realms/entreprises";
+/// Valeur attendue dans le champ `aud` des tokens (ajoutée par le client `swagger` du realm).
+pub const OIDC_AUDIENCE_DEFAUT: &str = "entreprises-api";
 
-#[derive(Debug, Clone)]
+#[derive(Debug)]
 pub struct Config {
     pub database_url: String,
     pub bind_addr: String,
@@ -21,26 +23,27 @@ pub struct Config {
 }
 
 impl Config {
-    /// Lit `DATABASE_URL`, `BIND_ADDR`, `JWT_SECRET` (obligatoire) et `JWT_DUREE_MINUTES`.
+    /// Lit `DATABASE_URL`, `BIND_ADDR`, `OIDC_ISSUER`, `OIDC_AUDIENCE` et `OIDC_JWKS_URL`
+    /// (par défaut : `<OIDC_ISSUER>/protocol/openid-connect/certs`, l'adresse Keycloak).
     pub fn depuis_env() -> anyhow::Result<Self> {
-        let secret = std::env::var("JWT_SECRET").context("JWT_SECRET manquant : copier .env.example en .env")?;
-        let minutes = match std::env::var("JWT_DUREE_MINUTES") {
-            Ok(valeur) => {
-                valeur.trim().parse::<u64>().ok().filter(|m| (1..=24 * 60).contains(m)).with_context(|| {
-                    format!("JWT_DUREE_MINUTES invalide : « {valeur} » (entier de 1 à 1440 attendu)")
-                })?
-            }
-            Err(_) => JWT_DUREE_DEFAUT,
-        };
-        let jwt = Jwt::new(&secret, Duration::from_secs(minutes * 60)).map_err(|e| {
-            anyhow::anyhow!("JWT_SECRET trop court : {e}. En générer un avec `openssl rand -hex {SECRET_MIN}`.")
-        })?;
+        let emetteur = variable("OIDC_ISSUER", OIDC_ISSUER_DEFAUT);
+        let emetteur = emetteur.trim_end_matches('/');
+        anyhow::ensure!(
+            emetteur.starts_with("http://") || emetteur.starts_with("https://"),
+            "OIDC_ISSUER invalide : « {emetteur} » (URL du realm attendue, ex. {OIDC_ISSUER_DEFAUT})"
+        );
+        let jwks_url = variable("OIDC_JWKS_URL", &format!("{emetteur}/protocol/openid-connect/certs"));
+        let audience = variable("OIDC_AUDIENCE", OIDC_AUDIENCE_DEFAUT);
         Ok(Self {
             database_url: database_url(),
-            bind_addr: std::env::var("BIND_ADDR").unwrap_or_else(|_| BIND_ADDR_DEFAUT.to_owned()),
-            jwt,
+            bind_addr: variable("BIND_ADDR", BIND_ADDR_DEFAUT),
+            jwt: Jwt::new(emetteur, &audience, &jwks_url),
         })
     }
+}
+
+fn variable(nom: &str, defaut: &str) -> String {
+    std::env::var(nom).ok().filter(|v| !v.trim().is_empty()).unwrap_or_else(|| defaut.to_owned())
 }
 
 /// Charge `.env` s'il existe ; un fichier mal formé est une erreur (et non un silence).

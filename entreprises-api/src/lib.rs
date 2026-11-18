@@ -10,7 +10,6 @@ pub mod normalize;
 pub mod openapi;
 pub mod repository;
 pub mod routes;
-pub mod utilisateurs;
 
 use std::{sync::Arc, time::Duration};
 
@@ -34,7 +33,7 @@ pub const DELAI_MAX: Duration = Duration::from_secs(10);
 #[derive(Clone)]
 pub struct AppState {
     pub pool: MySqlPool,
-    /// Signature et vérification des JWT.
+    /// Vérification des access tokens émis par Keycloak.
     pub jwt: Arc<Jwt>,
 }
 
@@ -47,7 +46,7 @@ impl AppState {
 /// Application complète, réutilisée par `main` et par les tests.
 pub fn build_app(state: AppState) -> Router {
     routes::routes()
-        .merge(openapi::routes())
+        .merge(openapi::routes(state.jwt.emetteur()))
         .fallback(errors::route_inconnue)
         .method_not_allowed_fallback(errors::methode_non_autorisee)
         .layer(TimeoutLayer::with_status_code(StatusCode::REQUEST_TIMEOUT, DELAI_MAX))

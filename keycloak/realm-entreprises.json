@@ -1,0 +1,91 @@
+{
+  "realm": "entreprises",
+  "displayName": "API Entreprises",
+  "enabled": true,
+  "sslRequired": "external",
+  "loginWithEmailAllowed": true,
+  "duplicateEmailsAllowed": false,
+  "registrationAllowed": false,
+  "resetPasswordAllowed": false,
+  "bruteForceProtected": true,
+  "accessTokenLifespan": 900,
+  "ssoSessionIdleTimeout": 1800,
+  "ssoSessionMaxLifespan": 36000,
+  "internationalizationEnabled": true,
+  "supportedLocales": ["fr", "en"],
+  "defaultLocale": "fr",
+  "roles": {
+    "realm": [
+      {
+        "name": "lecteur",
+        "description": "Consulter et rechercher les entreprises, lire les statistiques"
+      },
+      {
+        "name": "admin",
+        "description": "Tout ce que fait un lecteur, plus modifier et supprimer",
+        "composite": true,
+        "composites": { "realm": ["lecteur"] }
+      }
+    ]
+  },
+  "clients": [
+    {
+      "clientId": "swagger",
+      "name": "Swagger UI des deux API",
+      "description": "Client public (navigateur) : flux Authorization Code + PKCE. Mot de passe direct autorisé pour les scripts de démo.",
+      "enabled": true,
+      "publicClient": true,
+      "protocol": "openid-connect",
+      "standardFlowEnabled": true,
+      "directAccessGrantsEnabled": true,
+      "implicitFlowEnabled": false,
+      "serviceAccountsEnabled": false,
+      "redirectUris": [
+        "http://127.0.0.1:3000/docs/*",
+        "http://localhost:3000/docs/*",
+        "http://127.0.0.1:8001/docs/*",
+        "http://localhost:8001/docs/*"
+      ],
+      "webOrigins": ["+"],
+      "attributes": {
+        "pkce.code.challenge.method": "S256",
+        "post.logout.redirect.uris": "+"
+      },
+      "protocolMappers": [
+        {
+          "name": "audience entreprises-api",
+          "protocol": "openid-connect",
+          "protocolMapper": "oidc-audience-mapper",
+          "config": {
+            "included.custom.audience": "entreprises-api",
+            "access.token.claim": "true",
+            "id.token.claim": "false",
+            "introspection.token.claim": "true"
+          }
+        }
+      ]
+    }
+  ],
+  "users": [
+    {
+      "username": "lecteur@demo.fr",
+      "email": "lecteur@demo.fr",
+      "emailVerified": true,
+      "firstName": "Lecteur",
+      "lastName": "Démo",
+      "enabled": true,
+      "credentials": [{ "type": "password", "value": "lecteur-demo-mdp", "temporary": false }],
+      "realmRoles": ["default-roles-entreprises", "lecteur"]
+    },
+    {
+      "username": "admin@demo.fr",
+      "email": "admin@demo.fr",
+      "emailVerified": true,
+      "firstName": "Admin",
+      "lastName": "Démo",
+      "enabled": true,
+      "credentials": [{ "type": "password", "value": "admin-demo-mdp", "temporary": false }],
+      "realmRoles": ["default-roles-entreprises", "admin"]
+    }
+  ]
+}

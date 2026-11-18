@@ -3,8 +3,5 @@
 # L'import est relançable sans risque : il garde les modifications PATCH et ne recrée pas les SIREN supprimés.
 set -e
 
+# Les comptes de démonstration sont dans Keycloak (keycloak/realm-entreprises.json), plus dans la base.
 import
-
-# Comptes de démonstration (voir README). S'ils existent déjà, l'erreur affichée est sans conséquence.
-MOT_DE_PASSE=admin-demo-mdp creer-utilisateur admin@demo.fr admin || true
-MOT_DE_PASSE=lecteur-demo-mdp creer-utilisateur lecteur@demo.fr lecteur || true

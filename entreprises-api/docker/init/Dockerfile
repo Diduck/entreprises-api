@@ -1,4 +1,4 @@
-# Image du service `init` : les commandes Rust `import` et `creer-utilisateur`, sans l'API.
+# Image du service `init` : la commande Rust `import`, sans l'API.
 # Contexte de build : le dossier entreprises-api (voir compose.yml à la racine du dépôt).
 
 FROM rust:1.94-slim-trixie AS build
@@ -9,11 +9,11 @@ COPY src ./src
 # Caches : les dépendances ne sont pas recompilées à chaque build.
 RUN --mount=type=cache,target=/usr/local/cargo/registry \
     --mount=type=cache,target=/src/target \
-    cargo build --release --bin import --bin creer-utilisateur \
-    && cp target/release/import target/release/creer-utilisateur /usr/local/bin/
+    cargo build --release --bin import \
+    && cp target/release/import /usr/local/bin/
 
 FROM debian:trixie-slim
 WORKDIR /app
-COPY --from=build /usr/local/bin/import /usr/local/bin/creer-utilisateur /usr/local/bin/
+COPY --from=build /usr/local/bin/import /usr/local/bin/
 COPY docker/init/init.sh /usr/local/bin/init.sh
 CMD ["sh", "/usr/local/bin/init.sh"]
